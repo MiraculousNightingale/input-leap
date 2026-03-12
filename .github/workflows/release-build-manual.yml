@@ -1,4 +1,4 @@
-name: Release Build (Manual)
+name: Release Build Manual
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       source_ref:
         description: Branch, tag, or commit SHA to build
         required: true
-        default: release/v3.0.3-windows
+        default: release/v3.0.3-source
         type: string
       release_tag:
         description: Git tag for the GitHub release
@@ -16,7 +16,7 @@ on:
       release_name:
         description: Title of the GitHub release
         required: true
-        default: InputLeap 3.0.3 (Windows + macOS Apple Silicon)
+        default: InputLeap 3.0.3 (Windows + macOS ARM64)
         type: string
       prerelease:
         description: Mark release as prerelease
