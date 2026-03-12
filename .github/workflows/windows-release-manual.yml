@@ -1,4 +1,4 @@
-name: Windows Release (Manual)
+name: Release Build (Manual)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
       release_name:
         description: Title of the GitHub release
         required: true
-        default: InputLeap 3.0.3 (Windows)
+        default: InputLeap 3.0.3 (Windows + macOS Apple Silicon)
         type: string
       prerelease:
         description: Mark release as prerelease
@@ -36,11 +36,17 @@ env:
   B_BUILD_TYPE: Release
   QT_VERSION: "6.6"
   QT_MAJOR: "6"
+  MACOS_MIN_VERSION: "14"
+  MACOS_ARCH: "arm64"
+  OPENSSL_INSTALL_PATH: "/Users/runner/openssl"
+  OPENSSL_VERSION: "3.2.0"
 
 jobs:
   windows-release:
     name: Windows Release Build
     runs-on: windows-2022
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
 
     steps:
       - uses: actions/checkout@v4
@@ -162,15 +168,109 @@ jobs:
             ${{ steps.installer.outputs.dir }}/*
           if-no-files-found: error
 
+  macos-apple-silicon-release:
+    name: macOS Apple Silicon Release Build
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: input-leap
+          submodules: recursive
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+          cache-key-prefix: macOS-${{ runner.os }}-Qt${{ env.QT_VERSION }}
+
+      - name: Setup the image
+        run: brew install ninja
+
+      - name: Cache OpenSSL Universal
+        id: cache-openssl
+        uses: actions/cache@v4.2.4
+        with:
+          path: ${{ env.OPENSSL_INSTALL_PATH }}
+          key: macOS-${{ runner.os }}-ssl-${{ env.MACOS_ARCH }}-${{ env.OPENSSL_VERSION }}
+
+      - name: Build OpenSSL Universal
+        if: steps.cache-openssl.outputs.cache-hit != 'true'
+        run: |
+          curl -L "https://github.com/openssl/openssl/releases/download/openssl-${{ env.OPENSSL_VERSION }}/openssl-${{ env.OPENSSL_VERSION }}.tar.gz" -o "openssl-${{ env.OPENSSL_VERSION }}.tar.gz"
+          tar -xf "openssl-${{ env.OPENSSL_VERSION }}.tar.gz"
+          echo "#!/bin/bash
+          if [[ \$* == *-arch\ x86_64* ]] && ! [[ \$* == *-arch\ arm64* ]]; then
+            cc -arch arm64 \$@
+          else
+            cc \$@
+          fi" >> /Users/runner/cc_override
+          chmod a+x /Users/runner/cc_override
+          cat /Users/runner/cc_override
+          export MACOSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN_VERSION }}
+          export CC=/Users/runner/cc_override
+          cd "openssl-${{ env.OPENSSL_VERSION }}"
+          ./configure no-asm darwin64-x86_64-cc --prefix=${{ env.OPENSSL_INSTALL_PATH }}
+          make
+          make install
+
+      - name: Setup the build
+        run: |
+          cmake -DCMAKE_BUILD_TYPE="${B_BUILD_TYPE}" -S input-leap -B build -G Ninja \
+                -DCMAKE_UNITY_BUILD=1 \
+                -DOpenSSL_ROOT=${{ env.OPENSSL_INSTALL_PATH }} \
+                -DCMAKE_OSX_SYSROOT=$(xcode-select --print-path)/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.MACOS_MIN_VERSION }} \
+                -DQT_DEFAULT_MAJOR_VERSION=${{ env.QT_MAJOR }} \
+                -DINPUTLEAP_VERSION_DESC=release \
+                -DINPUTLEAP_BUILD_GULRAK_FILESYSTEM=0 \
+                -DCMAKE_OSX_ARCHITECTURES="${{ env.MACOS_ARCH }}"
+
+      - name: Run the build
+        run: cmake --build build --parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-${{ inputs.release_tag }}
+          path: ./build/bundle/*.dmg
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - windows-release
+      - macos-apple-silicon-release
+
+    steps:
+      - name: Download Windows assets
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release-${{ inputs.release_tag }}
+          path: release-assets/windows
+
+      - name: Download macOS assets
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release-${{ inputs.release_tag }}
+          path: release-assets/macos
+
+      - name: Show release assets
+        run: find release-assets -maxdepth 4 -type f -print
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_tag }}
-          target_commitish: ${{ steps.source.outputs.sha }}
+          target_commitish: ${{ needs.windows-release.outputs.source_sha }}
           name: ${{ inputs.release_name }}
           draft: ${{ inputs.draft }}
           prerelease: ${{ inputs.prerelease }}
+          overwrite_files: true
           files: |
-            ${{ steps.assets.outputs.portable }}
-            ${{ steps.installer.outputs.dir }}/*
+            release-assets/windows/**/*.zip
+            release-assets/windows/**/*.exe
+            release-assets/macos/**/*.dmg
           fail_on_unmatched_files: true
