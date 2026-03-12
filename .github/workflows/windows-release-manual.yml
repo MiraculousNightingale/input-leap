@@ -121,6 +121,31 @@ jobs:
         shell: pwsh
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp .\build\installer-inno\input-leap.iss'
 
+      - name: Locate installer artifacts
+        id: installer
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "build/installer-inno/bin",
+            "installer-inno/bin"
+          )
+
+          $found = $null
+          foreach ($dir in $candidates) {
+            if ((Test-Path $dir -PathType Container) -and ((Get-ChildItem -Path $dir -File | Measure-Object).Count -gt 0)) {
+              $found = $dir
+              break
+            }
+          }
+
+          if (-not $found) {
+            Write-Host "Installer output directories not found. Checked:"
+            $candidates | ForEach-Object { Write-Host " - $_" }
+            throw "No installer files were produced"
+          }
+
+          "dir=$found" >> $env:GITHUB_OUTPUT
+
       - name: Collect assets
         id: assets
         shell: pwsh
@@ -134,7 +159,7 @@ jobs:
           name: windows-release-${{ inputs.release_tag }}
           path: |
             ${{ steps.assets.outputs.portable }}
-            .\build\installer-inno\bin\*
+            ${{ steps.installer.outputs.dir }}/*
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -147,5 +172,5 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           files: |
             ${{ steps.assets.outputs.portable }}
-            .\build\installer-inno\bin\*
+            ${{ steps.installer.outputs.dir }}/*
           fail_on_unmatched_files: true
