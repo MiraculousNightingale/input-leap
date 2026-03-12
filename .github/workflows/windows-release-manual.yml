@@ -1,0 +1,129 @@
+name: Windows Release (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit SHA to build
+        required: true
+        default: release/v3.0.3-windows
+        type: string
+      release_tag:
+        description: Git tag for the GitHub release
+        required: true
+        default: v3.0.3
+        type: string
+      release_name:
+        description: Title of the GitHub release
+        required: true
+        default: InputLeap 3.0.3 (Windows)
+        type: string
+      prerelease:
+        description: Mark release as prerelease
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: Create release as draft
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  B_BUILD_TYPE: Release
+  QT_VERSION: "6.6"
+  QT_MAJOR: "6"
+
+jobs:
+  windows-release:
+    name: Windows Release Build
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: input-leap
+          submodules: recursive
+
+      - name: Capture source commit
+        id: source
+        shell: bash
+        run: |
+          cd input-leap
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download Bonjour SDK-like
+        id: bonjour
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -Force -ItemType Directory -Path .\deps | Out-Null
+
+          Invoke-WebRequest 'https://github.com/nelsonjchen/mDNSResponder/releases/download/v2019.05.08.1/x64_RelWithDebInfo.zip' -OutFile 'deps\BonjourSDKLike.zip'
+          Expand-Archive .\deps\BonjourSDKLike.zip -DestinationPath .\deps\BonjourSDKLike
+          Remove-Item deps\BonjourSDKLike.zip
+
+          "path=$env:GITHUB_WORKSPACE\deps\BonjourSDKLike" >> $env:GITHUB_OUTPUT
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+          cache-key-prefix: windows-${{ runner.os }}-Qt${{ env.QT_VERSION }}
+
+      - name: Configure build system
+        shell: pwsh
+        env:
+          BONJOUR_SDK_HOME: ${{ steps.bonjour.outputs.path }}
+        run: |
+          New-Item -Force -ItemType Directory -Path .\build | Out-Null
+
+          cd build
+          cmake -S ..\input-leap -G "Visual Studio 17 2022" -A x64 -D CMAKE_BUILD_TYPE=$env:B_BUILD_TYPE `
+            -DQT_DEFAULT_MAJOR_VERSION=${{ env.QT_MAJOR }} `
+            -DINPUTLEAP_VERSION_DESC=release `
+            -DINPUTLEAP_BUILD_GULRAK_FILESYSTEM=0 `
+            -DDNSSD_LIB="$env:BONJOUR_SDK_HOME\Lib\x64\dnssd.lib" `
+            -D CMAKE_INSTALL_PREFIX=input-leap-install
+
+      - name: Run build system
+        shell: pwsh
+        run: cmake --build build --config $env:B_BUILD_TYPE --target install
+
+      - name: Build installer
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp .\build\installer-inno\input-leap.iss'
+
+      - name: Collect assets
+        id: assets
+        shell: pwsh
+        run: |
+          $portable = "InputLeap-${{ inputs.release_tag }}-windows-portable.zip"
+          Compress-Archive -Path build\input-leap-install\* -DestinationPath $portable
+          "portable=$portable" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ inputs.release_tag }}
+          path: |
+            ${{ steps.assets.outputs.portable }}
+            .\build\installer-inno\bin\*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          target_commitish: ${{ steps.source.outputs.sha }}
+          name: ${{ inputs.release_name }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          files: |
+            ${{ steps.assets.outputs.portable }}
+            .\build\installer-inno\bin\*
+          fail_on_unmatched_files: true
