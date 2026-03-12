@@ -1,13 +1,6 @@
 name: Build tests
 
 on:
-  release:
-
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
-
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
@@ -18,7 +11,7 @@ on:
 
 # Set the build type here
 env:
-  B_BUILD_TYPE: ${{ (inputs.build_release || github.event_name == 'release') && 'Release' || 'Debug' }}
+  B_BUILD_TYPE: ${{ inputs.build_release && 'Release' || 'Debug' }}
   DEBIAN_FRONTEND: noninteractive
 
 jobs:
