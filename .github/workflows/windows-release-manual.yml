@@ -95,6 +95,28 @@ jobs:
         shell: pwsh
         run: cmake --build build --config $env:B_BUILD_TYPE --target install
 
+      - name: Normalize installer product version (legacy tags)
+        shell: pwsh
+        run: |
+          $iss = ".\build\installer-inno\input-leap.iss"
+          if (-not (Test-Path $iss)) {
+            throw "Expected installer script not found: $iss"
+          }
+
+          $rawTag = "${{ inputs.release_tag }}"
+          $normalized = $rawTag.TrimStart("v")
+          $normalized = ($normalized -split '[-+]')[0]
+          if ($normalized -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "release_tag must contain a numeric version like v3.0.3 (got '$rawTag')"
+          }
+          if ($normalized -match '^\d+\.\d+\.\d+$') {
+            $normalized = "$normalized.0"
+          }
+
+          (Get-Content $iss) `
+            -replace '^\s*#define MyAppVersion ".*"$', "#define MyAppVersion ""$normalized""" `
+            | Set-Content $iss
+
       - name: Build installer
         shell: pwsh
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp .\build\installer-inno\input-leap.iss'
