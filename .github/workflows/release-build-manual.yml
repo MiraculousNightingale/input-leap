@@ -171,6 +171,9 @@ jobs:
   macos-apple-silicon-release:
     name: macOS Apple Silicon Release Build
     runs-on: macos-14
+    env:
+      VERBOSE: 1
+      TERM: xterm-256color
 
     steps:
       - uses: actions/checkout@v4
@@ -180,15 +183,43 @@ jobs:
           submodules: recursive
 
       - name: Setup the image
-        run: brew install ninja qt@6
+        run: brew install ninja qt qtsvg qtvirtualkeyboard qtwebengine qtdeclarative
 
       - name: Configure Qt environment
         shell: bash
         run: |
-          QT_PREFIX="$(brew --prefix qt@6)"
+          QT_PREFIX="$(brew --prefix qt)"
           echo "$QT_PREFIX/bin" >> "$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=$QT_PREFIX" >> "$GITHUB_ENV"
           echo "Qt6_DIR=$QT_PREFIX/lib/cmake/Qt6" >> "$GITHUB_ENV"
+
+      - name: Prepare macdeployqt wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          QT_PREFIX="$(brew --prefix qt)"
+          QT_DEPLOY_BIN="$QT_PREFIX/bin/macdeployqt"
+          if [ ! -x "$QT_DEPLOY_BIN" ]; then
+            echo "macdeployqt not found at $QT_DEPLOY_BIN"
+            exit 1
+          fi
+
+          flags=""
+          for formula in qtbase qtsvg qtvirtualkeyboard qtwebengine qtdeclarative; do
+            prefix="$(brew --prefix "$formula" 2>/dev/null || true)"
+            if [ -n "$prefix" ] && [ -d "$prefix/lib" ]; then
+              flags="$flags -libpath=$prefix/lib"
+            fi
+          done
+
+          wrapper="$RUNNER_TEMP/macdeployqt-wrapper.sh"
+          cat > "$wrapper" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$QT_DEPLOY_BIN" "\$@" $flags
+          EOF
+          chmod +x "$wrapper"
+          echo "QT_DEPLOY_TOOL=$wrapper" >> "$GITHUB_ENV"
 
       - name: Cache OpenSSL Universal
         id: cache-openssl
@@ -227,6 +258,7 @@ jobs:
                 -DQT_DEFAULT_MAJOR_VERSION=${{ env.QT_MAJOR }} \
                 -DINPUTLEAP_VERSION_DESC=release \
                 -DINPUTLEAP_BUILD_GULRAK_FILESYSTEM=0 \
+                -DQT_DEPLOY_TOOL="${QT_DEPLOY_TOOL}" \
                 -DCMAKE_OSX_ARCHITECTURES="${{ env.MACOS_ARCH }}"
 
       - name: Run the build
